@@ -1,0 +1,160 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모바일 WEBP 제작기</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:#111827;color:white;font-family:Arial,sans-serif}
+main{max-width:520px;margin:auto}
+h2{text-align:center}
+.card{background:#1f2937;padding:18px;border-radius:14px;margin:14px 0}
+label{display:block;margin:14px 0 7px}
+input,button{width:100%;padding:13px;border-radius:9px;border:0;font-size:16px}
+input{background:#374151;color:white}
+button{background:#2563eb;color:white;font-weight:bold;margin-top:12px}
+button:disabled{opacity:.5}
+video{width:100%;max-height:260px;background:#000;border-radius:10px}
+small{color:#cbd5e1}
+#status{white-space:pre-wrap;line-height:1.6}
+a{display:block;text-align:center;background:#059669;color:white;padding:14px;border-radius:9px;margin-top:12px;text-decoration:none}
+</style>
+</head>
+<body>
+<main>
+<h2>🎬 모바일 WEBP 제작기</h2>
+<div class="card">
+<label>동영상 선택</label>
+<input type="file" id="file" accept="video/*">
+<video id="preview" controls playsinline></video>
+
+<label>시작 시간 (초)</label>
+<input id="start" type="number" value="0" min="0" step="0.1">
+
+<label>종료 시간 (초)</label>
+<input id="end" type="number" value="5" min="0" step="0.1">
+
+<label>초당 프레임 (FPS)</label>
+<input id="fps" type="number" value="12" min="1" max="30">
+
+<label>가로 크기 (픽셀)</label>
+<input id="width" type="number" value="480" min="100" max="1920">
+
+<label>품질 (0~100)</label>
+<input id="quality" type="number" value="80" min="1" max="100">
+
+<button id="convert">WEBP 만들기</button>
+<p id="status">동영상을 선택해 주세요.</p>
+<div id="download"></div>
+</div>
+</main>
+
+<script type="module">
+import { FFmpeg } from
+"https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js";
+import { toBlobURL } from
+"https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js";
+
+const ffmpeg = new FFmpeg();
+const fileInput = document.getElementById("file");
+const preview = document.getElementById("preview");
+const status = document.getElementById("status");
+const convert = document.getElementById("convert");
+let selectedFile = null;
+let loaded = false;
+
+fileInput.addEventListener("change", () => {
+  selectedFile = fileInput.files[0];
+  if (!selectedFile) return;
+  preview.src = URL.createObjectURL(selectedFile);
+  preview.onloadedmetadata = () => {
+    document.getElementById("end").value =
+      Math.min(5, preview.duration).toFixed(1);
+  };
+  status.textContent = "동영상 준비 완료";
+  document.getElementById("download").innerHTML = "";
+});
+
+ffmpeg.on("progress", ({ progress }) => {
+  status.textContent = "변환 중... " +
+    Math.round(progress * 100) + "%";
+});
+
+convert.addEventListener("click", async () => {
+  if (!selectedFile) {
+    alert("먼저 동영상을 선택하세요.");
+    return;
+  }
+
+  const start = Number(document.getElementById("start").value);
+  const end = Number(document.getElementById("end").value);
+  const fps = Number(document.getElementById("fps").value);
+  const width = Number(document.getElementById("width").value);
+  const quality = Number(document.getElementById("quality").value);
+
+  if (end <= start || start < 0 || end > preview.duration) {
+    alert("시작 및 종료 시간을 확인해 주세요.");
+    return;
+  }
+
+  convert.disabled = true;
+  document.getElementById("download").innerHTML = "";
+
+  try {
+    status.textContent = "변환 엔진 준비 중...";
+
+    if (!loaded) {
+      const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+      const workerURL = await toBlobURL(
+        "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js",
+        "text/javascript"
+      );
+
+      await ffmpeg.load({
+        classWorkerURL: workerURL,
+        coreURL: await toBlobURL(base + "/ffmpeg-core.js", "text/javascript"),
+        wasmURL: await toBlobURL(base + "/ffmpeg-core.wasm", "application/wasm")
+      });
+      loaded = true;
+    }
+
+    status.textContent = "동영상 변환 준비 중...";
+    const inputName = "input_video";
+    const outputName = "result.webp";
+
+    await ffmpeg.writeFile(inputName,
+      new Uint8Array(await selectedFile.arrayBuffer()));
+
+    await ffmpeg.exec([
+      "-ss", String(start),
+      "-i", inputName,
+      "-t", String(end - start),
+      "-vf", `fps=${fps},scale=${width}:-1:flags=lanczos`,
+      "-loop", "0",
+      "-c:v", "libwebp",
+      "-quality", String(quality),
+      outputName
+    ]);
+
+    const data = await ffmpeg.readFile(outputName);
+    const blob = new Blob([data], {type:"image/webp"});
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "my-animation.webp";
+    link.textContent = "⬇ WEBP 다운로드";
+    document.getElementById("download").appendChild(link);
+
+    status.textContent = "변환 완료!";
+  } catch (error) {
+    status.textContent = "오류 발생: " + error.message;
+  } finally {
+    convert.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
