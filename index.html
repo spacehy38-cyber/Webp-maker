@@ -231,7 +231,7 @@ $("convert").addEventListener("click",async()=>{
       "변환 완료!\n파일 크기: "+(blob.size/1024/1024).toFixed(2)+" MB";
 
   }catch(error){
-    $("status").textContent="오류 발생:\n"+error.message;
+    $("status").textContent="오류 발생:\n"+String(error);
   }finally{
     $("convert").disabled=false;
   }
