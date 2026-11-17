@@ -114,13 +114,17 @@ import { FFmpeg } from
 "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js";
 
 const $ = id => document.getElementById(id);
-
 const ffmpeg = new FFmpeg();
 
 let loaded = false;
 let inputURL = null;
 let outputURL = null;
 let selectedFile = null;
+let inputDirReady = false;
+let converting = false;
+
+const INPUT_DIR = "/input";
+const OUTPUT_NAME = "/result.webp";
 
 function status(message){
   $("status").textContent = message;
@@ -159,6 +163,11 @@ function blobURL(url, type){
   }).then(blob => URL.createObjectURL(
     new Blob([blob], {type})
   ));
+}
+
+function safeExtension(file){
+  const match = file.name.match(/\.([a-zA-Z0-9]{1,8})$/);
+  return match ? "." + match[1].toLowerCase() : ".mp4";
 }
 
 $("fps").addEventListener("input", () => {
@@ -211,7 +220,7 @@ $("videoFile").addEventListener("change", event => {
 });
 
 ffmpeg.on("log", ({message}) => {
-  if(message) status(message);
+  if(message && converting) status(message);
 });
 
 ffmpeg.on("progress", ({progress}) => {
@@ -231,16 +240,19 @@ $("loadBtn").addEventListener("click", async () => {
   $("loadBtn").disabled = true;
   status("변환 엔진 다운로드 중...\n처음에는 시간이 걸릴 수 있습니다.");
 
+  let coreURL = null;
+  let wasmURL = null;
+
   try{
     const base =
       "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
 
-    const coreURL = await blobURL(
+    coreURL = await blobURL(
       base + "/ffmpeg-core.js",
       "text/javascript"
     );
 
-    const wasmURL = await blobURL(
+    wasmURL = await blobURL(
       base + "/ffmpeg-core.wasm",
       "application/wasm"
     );
@@ -255,14 +267,18 @@ $("loadBtn").addEventListener("click", async () => {
     });
 
     loaded = true;
-    $("makeBtn").disabled = false;
+    $("makeBtn").disabled = !selectedFile;
 
-    status("엔진 준비 완료! 동영상을 선택하고 WEBP를 만들어 주세요.");
+    status("엔진 준비 완료!\n동영상을 선택하고 WEBP를 만들어 주세요.");
 
   }catch(error){
     console.error(error);
     status("엔진 준비 오류:\n" + (error.message || error));
     $("loadBtn").disabled = false;
+
+  }finally{
+    if(coreURL) URL.revokeObjectURL(coreURL);
+    if(wasmURL) URL.revokeObjectURL(wasmURL);
   }
 });
 
@@ -272,7 +288,14 @@ $("makeBtn").addEventListener("click", async () => {
     return;
   }
 
+  if(converting) return;
+
+  const file = selectedFile;
+  let mounted = false;
+
+  converting = true;
   $("makeBtn").disabled = true;
+  $("videoFile").disabled = true;
   $("download").hidden = true;
   $("resultArea").hidden = true;
   $("progress").value = 0;
@@ -292,41 +315,78 @@ $("makeBtn").addEventListener("click", async () => {
     const width = Number($("width").value);
     const quality = Number($("quality").value);
 
-    const ext = selectedFile.name.includes(".")
-      ? selectedFile.name.split(".").pop().toLowerCase()
-      : "mp4";
+    // 원본 파일을 복사하지 않고 안전한 이름으로 연결
+    const extension = safeExtension(file);
+    const inputName = "source" + extension;
+    const inputPath = INPUT_DIR + "/" + inputName;
 
-    const inputName = "input." + ext;
-    const outputName = "result.webp";
+    status("원본 파일 연결 중...\n파일 전체를 메모리에 복사하지 않습니다.");
 
-    status("동영상 읽는 중...");
+    // 입력 폴더 준비
+    if(!inputDirReady){
+      await ffmpeg.createDir(INPUT_DIR);
+      inputDirReady = true;
+    }
 
-    const bytes = new Uint8Array(
-      await selectedFile.arrayBuffer()
+    // 이전 작업에서 남은 마운트가 있다면 정리
+    try{
+      await ffmpeg.unmount(INPUT_DIR);
+    }catch(e){}
+
+    // File 객체를 WORKERFS에 직접 마운트
+    const workerFile = new File(
+      [file],
+      inputName,
+      {type:file.type || "application/octet-stream"}
     );
 
-    await ffmpeg.writeFile(inputName, bytes);
+    await ffmpeg.mount(
+      "WORKERFS",
+      {files:[workerFile]},
+      INPUT_DIR
+    );
 
-    status("WEBP 변환 중...\n화면을 닫지 말고 기다려 주세요.");
+    mounted = true;
+
+    // 이전 출력 파일 정리
+    try{
+      await ffmpeg.deleteFile(OUTPUT_NAME);
+    }catch(e){}
+
+    status(
+      "WEBP 변환 중...\n" +
+      "원본 용량: " + formatSize(file.size) + "\n" +
+      "추출 구간: " + duration.toFixed(2) + "초\n" +
+      "화면을 닫지 말고 기다려 주세요."
+    );
 
     const result = await ffmpeg.exec([
       "-ss", String(start),
       "-t", String(duration),
-      "-i", inputName,
+      "-i", inputPath,
       "-vf", `fps=${fps},scale=${width}:-1:flags=lanczos`,
       "-an",
       "-c:v", "libwebp",
       "-quality", String(quality),
       "-loop", "0",
-      outputName
+      OUTPUT_NAME
     ]);
 
     if(result !== 0){
-      throw new Error("변환에 실패했습니다. 영상 형식이나 구간을 확인해 주세요.");
+      throw new Error(
+        "변환에 실패했습니다. 영상 코덱이나 구간을 확인해 주세요."
+      );
     }
 
-    const data = await ffmpeg.readFile(outputName);
+    status("완성된 WEBP 파일 읽는 중...");
+
+    // 결과 파일만 메모리로 읽음
+    const data = await ffmpeg.readFile(OUTPUT_NAME);
     const blob = new Blob([data], {type:"image/webp"});
+
+    if(blob.size === 0){
+      throw new Error("결과 파일의 용량이 0입니다.");
+    }
 
     if(outputURL) URL.revokeObjectURL(outputURL);
     outputURL = URL.createObjectURL(blob);
@@ -342,9 +402,9 @@ $("makeBtn").addEventListener("click", async () => {
     $("outputSize").textContent =
       "WEBP 용량: " + formatSize(blob.size);
 
-    const difference = selectedFile.size - blob.size;
-    const percent = selectedFile.size > 0
-      ? (difference / selectedFile.size * 100)
+    const difference = file.size - blob.size;
+    const percent = file.size > 0
+      ? difference / file.size * 100
       : 0;
 
     if(difference > 0){
@@ -356,20 +416,41 @@ $("makeBtn").addEventListener("click", async () => {
         "원본보다 " + formatSize(Math.abs(difference)) +
         " 커짐";
     }else{
-      $("savingInfo").textContent = "원본과 용량이 같습니다.";
+      $("savingInfo").textContent =
+        "원본과 용량이 같습니다.";
     }
 
     $("progress").value = 100;
-    status("변환 완료!\n미리보기를 확인하고 WEBP를 저장하세요.");
 
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
+    status(
+      "변환 완료!\n" +
+      "원본 파일: " + formatSize(file.size) + "\n" +
+      "완성 파일: " + formatSize(blob.size) + "\n" +
+      "미리보기를 확인하고 WEBP를 저장하세요."
+    );
 
   }catch(error){
     console.error(error);
     status("오류 발생:\n" + (error.message || error));
+
   }finally{
-    $("makeBtn").disabled = false;
+    // 원본 파일 연결 해제
+    if(mounted){
+      try{
+        await ffmpeg.unmount(INPUT_DIR);
+      }catch(error){
+        console.warn("입력 파일 연결 해제 오류:", error);
+      }
+    }
+
+    // 결과 임시 파일 정리
+    try{
+      await ffmpeg.deleteFile(OUTPUT_NAME);
+    }catch(e){}
+
+    converting = false;
+    $("videoFile").disabled = false;
+    $("makeBtn").disabled = !loaded || !selectedFile;
   }
 });
 </script>
