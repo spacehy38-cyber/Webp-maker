@@ -30,8 +30,17 @@ button{
   font-weight:bold;margin-top:12px
 }
 button:disabled{opacity:.45}
-video{width:100%;border-radius:10px;background:#000}
+video,img.preview{
+  width:100%;border-radius:10px;
+  background:#000;margin-top:10px
+}
+img.preview{display:block}
 small{color:#aab3c4}
+.info{
+  background:#30394c;padding:12px;
+  border-radius:9px;margin-top:10px;
+  line-height:1.8
+}
 #status{white-space:pre-wrap;line-height:1.5}
 progress{width:100%;height:14px}
 a.download{
@@ -41,6 +50,7 @@ a.download{
   border-radius:9px;margin-top:12px;
   font-weight:bold
 }
+.section-title{font-weight:bold;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -48,13 +58,18 @@ a.download{
 <h2>🎞 모바일 WEBP 제작기</h2>
 
 <div class="panel">
-  <label>동영상 선택</label>
+  <div class="section-title">① 동영상 선택</div>
   <input type="file" id="videoFile" accept="video/*">
   <video id="preview" controls playsinline></video>
-  <small id="durationText">동영상을 선택해 주세요.</small>
+  <div class="info">
+    <div id="durationText">영상 길이: -</div>
+    <div id="originalSize">원본 용량: -</div>
+  </div>
 </div>
 
 <div class="panel">
+  <div class="section-title">② 변환 설정</div>
+
   <label>시작 시간 (초 / 분:초 / 시:분:초)</label>
   <input id="start" value="0" placeholder="예: 5 또는 1:20">
 
@@ -75,8 +90,21 @@ a.download{
 </div>
 
 <div class="panel">
+  <div class="section-title">③ 변환 결과</div>
+
   <div id="status">준비 완료. 동영상을 선택해 주세요.</div>
   <progress id="progress" value="0" max="100"></progress>
+
+  <div class="info">
+    <div id="outputSize">WEBP 용량: -</div>
+    <div id="savingInfo">용량 비교: -</div>
+  </div>
+
+  <div id="resultArea" hidden>
+    <p>완성된 움직이는 WEBP 미리보기</p>
+    <img id="resultPreview" class="preview" alt="움직이는 WEBP 미리보기">
+  </div>
+
   <a id="download" class="download" hidden>WEBP 저장하기</a>
 </div>
 </main>
@@ -98,20 +126,35 @@ function status(message){
   $("status").textContent = message;
 }
 
+function formatSize(bytes){
+  if(!Number.isFinite(bytes)) return "-";
+  if(bytes < 1024) return bytes + " B";
+  if(bytes < 1024*1024)
+    return (bytes/1024).toFixed(1) + " KB";
+  return (bytes/(1024*1024)).toFixed(2) + " MB";
+}
+
 function parseTime(value){
   const parts = value.trim().split(":").map(Number);
-  if(!parts.length || parts.some(n => !Number.isFinite(n) || n < 0)){
+
+  if(!parts.length ||
+     parts.some(n => !Number.isFinite(n) || n < 0)){
     throw new Error("시간 형식을 확인해 주세요.");
   }
+
   if(parts.length === 1) return parts[0];
   if(parts.length === 2) return parts[0]*60 + parts[1];
-  if(parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+  if(parts.length === 3)
+    return parts[0]*3600 + parts[1]*60 + parts[2];
+
   throw new Error("시간은 초, 분:초, 시:분:초 형식으로 입력해 주세요.");
 }
 
 function blobURL(url, type){
   return fetch(url).then(response => {
-    if(!response.ok) throw new Error("파일 다운로드 실패: " + url);
+    if(!response.ok)
+      throw new Error("파일 다운로드 실패: " + url);
+
     return response.blob();
   }).then(blob => URL.createObjectURL(
     new Blob([blob], {type})
@@ -121,9 +164,11 @@ function blobURL(url, type){
 $("fps").addEventListener("input", () => {
   $("fpsValue").textContent = $("fps").value;
 });
+
 $("width").addEventListener("input", () => {
   $("widthValue").textContent = $("width").value;
 });
+
 $("quality").addEventListener("input", () => {
   $("qualityValue").textContent = $("quality").value;
 });
@@ -138,14 +183,30 @@ $("videoFile").addEventListener("change", event => {
   inputURL = URL.createObjectURL(file);
 
   $("preview").src = inputURL;
+
+  $("durationText").textContent = "영상 길이: 확인 중...";
+  $("originalSize").textContent =
+    "원본 용량: " + formatSize(file.size);
+
   $("preview").onloadedmetadata = () => {
     const duration = $("preview").duration;
+
     $("durationText").textContent =
       "영상 길이: " + duration.toFixed(2) + "초";
+
     $("end").value = Math.min(5, duration).toFixed(2);
   };
 
   $("download").hidden = true;
+  $("resultArea").hidden = true;
+  $("outputSize").textContent = "WEBP 용량: -";
+  $("savingInfo").textContent = "용량 비교: -";
+
+  if(outputURL){
+    URL.revokeObjectURL(outputURL);
+    outputURL = null;
+  }
+
   status("동영상을 선택했습니다.");
 });
 
@@ -162,7 +223,7 @@ ffmpeg.on("progress", ({progress}) => {
 });
 
 $("loadBtn").addEventListener("click", async () => {
-  if(loaded) {
+  if(loaded){
     status("변환 엔진이 이미 준비되어 있습니다.");
     return;
   }
@@ -170,7 +231,7 @@ $("loadBtn").addEventListener("click", async () => {
   $("loadBtn").disabled = true;
   status("변환 엔진 다운로드 중...\n처음에는 시간이 걸릴 수 있습니다.");
 
-  try {
+  try{
     const base =
       "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
 
@@ -195,9 +256,10 @@ $("loadBtn").addEventListener("click", async () => {
 
     loaded = true;
     $("makeBtn").disabled = false;
+
     status("엔진 준비 완료! 동영상을 선택하고 WEBP를 만들어 주세요.");
 
-  } catch(error) {
+  }catch(error){
     console.error(error);
     status("엔진 준비 오류:\n" + (error.message || error));
     $("loadBtn").disabled = false;
@@ -205,24 +267,26 @@ $("loadBtn").addEventListener("click", async () => {
 });
 
 $("makeBtn").addEventListener("click", async () => {
-  if(!loaded || !selectedFile) {
+  if(!loaded || !selectedFile){
     status("먼저 동영상을 선택하고 엔진을 준비해 주세요.");
     return;
   }
 
   $("makeBtn").disabled = true;
   $("download").hidden = true;
+  $("resultArea").hidden = true;
   $("progress").value = 0;
 
-  try {
+  try{
     const start = parseTime($("start").value);
     const end = parseTime($("end").value);
     const duration = end - start;
 
-    if(duration <= 0) throw new Error("종료 시간은 시작 시간보다 커야 합니다.");
-    if(end > $("preview").duration + 0.1) {
+    if(duration <= 0)
+      throw new Error("종료 시간은 시작 시간보다 커야 합니다.");
+
+    if(end > $("preview").duration + 0.1)
       throw new Error("종료 시간이 영상 길이를 초과했습니다.");
-    }
 
     const fps = Number($("fps").value);
     const width = Number($("width").value);
@@ -236,7 +300,10 @@ $("makeBtn").addEventListener("click", async () => {
     const outputName = "result.webp";
 
     status("동영상 읽는 중...");
-    const bytes = new Uint8Array(await selectedFile.arrayBuffer());
+
+    const bytes = new Uint8Array(
+      await selectedFile.arrayBuffer()
+    );
 
     await ffmpeg.writeFile(inputName, bytes);
 
@@ -254,7 +321,7 @@ $("makeBtn").addEventListener("click", async () => {
       outputName
     ]);
 
-    if(result !== 0) {
+    if(result !== 0){
       throw new Error("변환에 실패했습니다. 영상 형식이나 구간을 확인해 주세요.");
     }
 
@@ -269,16 +336,39 @@ $("makeBtn").addEventListener("click", async () => {
     link.download = "animated.webp";
     link.hidden = false;
 
+    $("resultPreview").src = outputURL;
+    $("resultArea").hidden = false;
+
+    $("outputSize").textContent =
+      "WEBP 용량: " + formatSize(blob.size);
+
+    const difference = selectedFile.size - blob.size;
+    const percent = selectedFile.size > 0
+      ? (difference / selectedFile.size * 100)
+      : 0;
+
+    if(difference > 0){
+      $("savingInfo").textContent =
+        "원본보다 " + formatSize(difference) +
+        " 작아짐 (" + percent.toFixed(1) + "% 감소)";
+    }else if(difference < 0){
+      $("savingInfo").textContent =
+        "원본보다 " + formatSize(Math.abs(difference)) +
+        " 커짐";
+    }else{
+      $("savingInfo").textContent = "원본과 용량이 같습니다.";
+    }
+
     $("progress").value = 100;
-    status("변환 완료!\n아래 WEBP 저장하기를 눌러 저장하세요.");
+    status("변환 완료!\n미리보기를 확인하고 WEBP를 저장하세요.");
 
     await ffmpeg.deleteFile(inputName);
     await ffmpeg.deleteFile(outputName);
 
-  } catch(error) {
+  }catch(error){
     console.error(error);
     status("오류 발생:\n" + (error.message || error));
-  } finally {
+  }finally{
     $("makeBtn").disabled = false;
   }
 });
