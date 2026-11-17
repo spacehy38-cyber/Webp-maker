@@ -35,7 +35,7 @@ a{display:block;text-align:center;background:#059669;color:white;padding:15px;bo
 
 <label>시작 시간</label>
 <input id="start" type="text" value="0:00" placeholder="예: 1:36:13">
-<div class="hint">시:분:초 또는 분:초 형식</div>
+<div class="hint">시:분:초 또는 분:초 형식 (90 입력 시 90초)</div>
 
 <label>종료 시간</label>
 <input id="end" type="text" value="0:05" placeholder="예: 1:40:00">
@@ -146,9 +146,16 @@ async function loadEngine() {
 
   $("status").textContent="3/3 변환 엔진 초기화 중...";
 
+  // GitHub 저장소 안에 올린 같은 출처의 Worker 사용
+  const classWorkerURL = new URL(
+    "./ffmpeg/worker.js",
+    window.location.href
+  ).href;
+
   await ffmpeg.load({
-    coreURL:coreURL,
-    wasmURL:wasmURL
+    coreURL: coreURL,
+    wasmURL: wasmURL,
+    classWorkerURL: classWorkerURL
   });
 
   loaded=true;
